@@ -1,7 +1,6 @@
 package com.manhuatuji.core
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -30,30 +29,69 @@ class StoryboardRulesTest {
     }
 
     @Test
-    fun parsesShotsAndKeepsTheManuscriptIntact() {
+    fun parsesShotsWithoutRequiringTheManuscriptVerbatim() {
         val board = StoryboardRules.parse(shotsJson())
         assertEquals(2, board.panels.size)
-        assertTrue(StoryboardRules.coversManuscript(manuscript, board))
+        assertTrue(board.panels.all { it.kind == "page" })
         assertTrue(StoryboardRules.blockingIssues(manuscript, board).isEmpty())
-        assertEquals(manuscript, StoryboardRules.joinedVoiceover(board))
     }
 
     @Test
-    fun emptyCoverVoiceoverIsExcludedFromTheManuscript() {
-        val board = StoryboardRules.parse(shotsJson(extraCover = true))
+    fun firstEmptyCaptionIsACover() {
+        val board = StoryboardRules.parse(
+            """
+            {"panels":[
+              {"caption":"","scene":"两人站在白底前","image_prompt":"白底封面，顶部留白"},
+              {"caption":"小满听完把这件事讲给大家。","scene":"小满坐着","image_prompt":"白底，短发女性"}
+            ]}
+            """.trim()
+        )
         assertEquals("cover", board.panels.first().kind)
-        assertEquals("", board.panels.first().caption)
-        assertTrue(StoryboardRules.coversManuscript(manuscript, board))
+        assertEquals("page", board.panels[1].kind)
+        assertTrue(StoryboardRules.blockingIssues(manuscript, board).none { it.contains("没有原文") })
         assertTrue(StoryboardRules.blockingIssues(manuscript, board).isEmpty())
     }
 
     @Test
-    fun verbatimMismatchIsBlockingButTheShotsStillParse() {
-        val broken = shotsJson().replace("她说这日子过不下去。", "她说日子很难。")
-        val board = StoryboardRules.parse(broken)
-        assertEquals(2, board.panels.size)
-        assertFalse(StoryboardRules.coversManuscript(manuscript, board))
-        assertTrue(StoryboardRules.blockingIssues(manuscript, board).any { it.contains("原稿") })
+    fun explicitCoverMarkersAreRecognized() {
+        val byKind = StoryboardRules.parse(shotsJson(extraCover = true))
+        assertEquals("cover", byKind.panels.first().kind)
+        assertTrue(StoryboardRules.blockingIssues(manuscript, byKind).isEmpty())
+        val byFlag = StoryboardRules.parse(
+            """
+            {"shots":[
+              {"cover":true,"voiceover":"","visual":"封面","image_prompt":"白底封面"},
+              {"voiceover":"改写后的旁白。","visual":"小满在听","image_prompt":"白底"}
+            ]}
+            """.trim()
+        )
+        assertEquals("cover", byFlag.panels.first().kind)
+        assertTrue(StoryboardRules.blockingIssues("完全不同的原稿", byFlag).isEmpty())
+    }
+
+    @Test
+    fun rewrittenNarrationDoesNotBlockConfirm() {
+        val board = StoryboardRules.parse(
+            shotsJson().replace("上周同学来找我。", "小满说，同学来找她。")
+                .replace("她说这日子过不下去。", "日子已经过不下去了。")
+        )
+        assertTrue(StoryboardRules.joinedVoiceover(board) != manuscript)
+        assertTrue(StoryboardRules.blockingIssues(manuscript, board).none { it.contains("原稿") })
+        assertTrue(StoryboardRules.blockingIssues(manuscript, board).isEmpty())
+    }
+
+    @Test
+    fun emptyCaptionAfterTheCoverStillNeedsNarration() {
+        val board = StoryboardRules.parse(
+            """
+            {"shots":[
+              {"caption":"","visual":"封面","image_prompt":"白底封面"},
+              {"caption":"","visual":"空镜","image_prompt":"白底"}
+            ]}
+            """.trim()
+        )
+        assertEquals("cover", board.panels.first().kind)
+        assertTrue(StoryboardRules.blockingIssues(manuscript, board).any { it.contains("没有原文") })
     }
 
     @Test
@@ -71,9 +109,7 @@ class StoryboardRulesTest {
             """{"voiceover":"$index","visual":"画面$index","image_prompt":"白底$index"}"""
         }
         val board = StoryboardRules.parse("""{"shots":[$pages]}""")
-        val text = (1..19).joinToString("") { it.toString() }
-        assertTrue(StoryboardRules.coversManuscript(text, board))
-        assertTrue(StoryboardRules.blockingIssues(text, board).any { it.contains("18") })
+        assertTrue(StoryboardRules.blockingIssues("随便一篇原稿", board).any { it.contains("18") })
     }
 
     @Test

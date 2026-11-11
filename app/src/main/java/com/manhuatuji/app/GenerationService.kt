@@ -131,12 +131,12 @@ class GenerationService : Service() {
                 if (note.isNotEmpty()) {
                     append("\n\n【修改意见】\n")
                     append(note)
-                    append("\n请按修改意见重新切分。voiceover 仍须逐字覆盖原稿，不得改写原文。")
+                    append("\n请按修改意见重新分镜。")
                 }
                 if (attempt > 0) {
                     append("\n\n上次结果不合格：")
                     append(last)
-                    append("\n请只输出 JSON。所有 voiceover 按顺序拼接后必须与原稿逐字符一致。")
+                    append("\n请只输出 JSON。")
                 }
             }
             val content = api.text(
@@ -153,28 +153,16 @@ class GenerationService : Service() {
                 if (attempt == 0) update(project, "storyboard", "分镜格式不对，正在重试一次")
                 continue
             }
-            if (StoryboardRules.coversManuscript(manuscript, parsed)) {
-                applyBoard(project, parsed, manuscript)
-                val warnings = StoryboardRules.warnings(parsed)
-                project.stage = "storyboard"
-                project.status = "review"
-                project.detail = if (warnings.isEmpty()) {
-                    "分镜已生成，请检查。要改节奏就写反馈后重拆，满意后再确认出图"
-                } else {
-                    "分镜已生成。" + warnings.take(3).joinToString("；")
-                }
-                store.save(project)
-                notifyStatus(project.detail, false)
-                return
-            }
-            last = "旁白拼接后与原稿不一致"
-            if (attempt == 0) update(project, "storyboard", "旁白没有逐字覆盖原稿，正在重试一次")
-        }
-        if (parsed != null) {
             applyBoard(project, parsed, manuscript)
+            val warnings = StoryboardRules.warnings(parsed)
+            val blocking = StoryboardRules.blockingIssues(manuscript, parsed)
             project.stage = "storyboard"
             project.status = "review"
-            project.detail = "分镜已显示，但旁白还没逐字盖住原稿。可以改字，或写反馈后重拆。"
+            project.detail = when {
+                blocking.isNotEmpty() -> "分镜已生成，确认出图前还需处理：" + blocking.take(3).joinToString("；")
+                warnings.isEmpty() -> "分镜已生成，请检查。要改节奏就写反馈后重拆，满意后再确认出图"
+                else -> "分镜已生成。" + warnings.take(3).joinToString("；")
+            }
             store.save(project)
             notifyStatus(project.detail, false)
             return

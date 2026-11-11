@@ -51,9 +51,10 @@ object StoryboardRules {
             val voiceover = obj.optString("voiceover")
                 .ifEmpty { obj.optString("caption") }
                 .ifEmpty { chunks.joinToString("") }
+            val markedCover = obj.optString("kind") == "cover" || obj.optBoolean("cover", false)
             val kind = when {
-                obj.optString("kind") == "cover" -> "cover"
-                voiceover.isEmpty() && obj.optBoolean("cover", false) -> "cover"
+                markedCover -> "cover"
+                index == 0 && voiceover.isEmpty() -> "cover"
                 else -> "page"
             }
             PanelSpec(
@@ -73,25 +74,10 @@ object StoryboardRules {
 
     fun joinedVoiceover(board: Storyboard): String = manuscriptPanels(board).joinToString("") { it.caption }
 
-    /** 每一镜原文都是原稿里的连续片段，按顺序拼回去必须等于归一化后的原稿。封面空旁白不参与。 */
-    fun coversManuscript(manuscript: String, board: Storyboard): Boolean {
-        val expected = normalizeManuscript(manuscript)
-        var cursor = 0
-        for (panel in manuscriptPanels(board)) {
-            val text = panel.caption
-            if (text.isEmpty() || !expected.startsWith(text, cursor)) return false
-            cursor += text.length
-        }
-        return cursor == expected.length
-    }
-
     fun blockingIssues(manuscript: String, board: Storyboard): List<String> {
         val found = mutableListOf<String>()
         val pages = manuscriptPanels(board)
         if (pages.isEmpty()) found += "没有可显示的分镜"
-        if (pages.isNotEmpty() && !coversManuscript(manuscript, board)) {
-            found += "旁白按顺序拼接后与原稿不一致"
-        }
         pages.forEachIndexed { index, panel ->
             val label = "第 ${index + 1} 镜"
             if (panel.caption.isEmpty()) found += "$label 没有原文"
