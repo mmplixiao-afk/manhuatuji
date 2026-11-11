@@ -553,10 +553,49 @@ fun PreviewScreen(store: ProjectStore, projectId: String, panelId: Int, onBack: 
 
 @Composable
 fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onPrompts: () -> Unit, onMessage: (String) -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var tab by remember { mutableStateOf("text") }
     var key by remember { mutableStateOf("") }
     var url by remember { mutableStateOf(settings.textBaseUrl) }
     var model by remember { mutableStateOf(settings.textModel) }
+    var testing by remember { mutableStateOf(false) }
+    var connectionResult by remember { mutableStateOf("") }
+    fun probe(kind: String) {
+        val apiKey = key.trim().ifBlank { settings.apiKey }
+        testing = true
+        connectionResult = ""
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val api = CloudApi()
+                    if (kind == "text") {
+                        api.text(
+                            url.trim(),
+                            model.trim(),
+                            apiKey,
+                            "你是接口测试助手，只回复连接成功。",
+                            "请回复：连接成功",
+                        )
+                        "文本接口连接成功"
+                    } else {
+                        val output = File(context.cacheDir, "api-test-image.png")
+                        try {
+                            api.image(apiKey, "一张简单的红色圆形，白底，无文字、无水印。", output)
+                            "图片接口连接成功"
+                        } finally {
+                            output.delete()
+                        }
+                    }
+                }.getOrElse { error ->
+                    "连接失败：${error.message.orEmpty().take(160).ifBlank { "请检查配置" }}"
+                }
+            }
+            testing = false
+            connectionResult = result
+            onMessage(result)
+        }
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回") }
@@ -576,33 +615,49 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onPrompts: () -> U
             OutlinedTextField(
                 value = key,
                 onValueChange = { key = it },
+                enabled = !testing,
                 label = { Text("API Key") },
                 visualTransformation = PasswordVisualTransformation(),
                 modifier = Modifier.fillMaxWidth(),
             )
-            OutlinedTextField(url, { url = it }, label = { Text("接口地址") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                url,
+                { url = it },
+                enabled = !testing,
+                label = { Text("接口地址") },
+                modifier = Modifier.fillMaxWidth(),
+            )
             Text("文本模型", fontWeight = FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 AppSettings.textModelChoices.forEach { (id, label) ->
-                    OutlinedButton(onClick = { model = id }) { Text(label, fontSize = 12.sp) }
+                    OutlinedButton(onClick = { model = id }, enabled = !testing) { Text(label, fontSize = 12.sp) }
                 }
             }
             OutlinedTextField(
                 model,
                 { model = it },
+                enabled = !testing,
                 label = { Text("模型 ID，也可以直接改") },
                 modifier = Modifier.fillMaxWidth(),
             )
-            Button(
-                onClick = {
-                    settings.textBaseUrl = url
-                    settings.textModel = model
-                    if (key.isNotBlank()) settings.apiKey = key
-                    key = ""
-                    onMessage(if (settings.hasApiKey()) "文本接口已保存" else "地址和模型已保存，还没有 Key")
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("保存设置") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        settings.textBaseUrl = url
+                        settings.textModel = model
+                        if (key.isNotBlank()) settings.apiKey = key
+                        key = ""
+                        onMessage(if (settings.hasApiKey()) "文本接口已保存" else "地址和模型已保存，还没有 Key")
+                    },
+                    enabled = !testing,
+                    modifier = Modifier.weight(1f),
+                ) { Text("保存设置") }
+                OutlinedButton(
+                    onClick = { probe("text") },
+                    enabled = !testing,
+                    modifier = Modifier.weight(1f),
+                ) { Text(if (testing) "测试中..." else "测试连接") }
+            }
         } else {
             Card(colors = CardDefaults.cardColors(containerColor = CardWhite)) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -610,11 +665,19 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onPrompts: () -> U
                     Text("${ImageApiSpec.CHANNEL}  ${ImageApiSpec.HOST}")
                     Text("模型 ${ImageApiSpec.MODEL}")
                     Text("尺寸 ${ImageApiSpec.SIZE}，白底")
-                    Text("使用文本接口里保存的 API Key。模型只出纯图，旁白和封面红圈由程序叠加。", color = Muted, fontSize = 13.sp)
+                    Text("使用上面填写的 API Key；输入框为空时用已保存的 Key。模型只出纯图，旁白和封面红圈由程序叠加。", color = Muted, fontSize = 13.sp)
                 }
             }
+            OutlinedButton(
+                onClick = { probe("image") },
+                enabled = !testing,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (testing) "测试中..." else "测试连接") }
         }
-        OutlinedButton(onClick = onPrompts, modifier = Modifier.fillMaxWidth()) { Text("分镜和生图提示词") }
+        if (connectionResult.isNotBlank()) {
+            Text(connectionResult, color = if (connectionResult.startsWith("连接失败")) Accent else Muted)
+        }
+        OutlinedButton(onClick = onPrompts, enabled = !testing, modifier = Modifier.fillMaxWidth()) { Text("分镜和生图提示词") }
     }
 }
 
