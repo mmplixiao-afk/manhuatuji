@@ -7,20 +7,34 @@ import org.junit.Test
 
 class ImageRequestTest {
     @Test
-    fun imageRequestStaysOnChannelOne() {
-        val url = ImageApiSpec.generationsUrl()
-        ImageApiSpec.requireChannel(url)
-        assertEquals("direct-api.cangyuansuanli.cn", ImageApiSpec.HOST)
-        assertTrue(url.startsWith("https://direct-api.cangyuansuanli.cn/"))
-        val body = ImageApiSpec.requestBody("白底漫画", "aaaa")
-        assertEquals("gpt-image-2.5", body.getString("model"))
-        assertFalse(body.getString("model") == "gpt-image-2")
-        assertEquals("1024x1365", body.getString("size"))
+    fun imageRequestUsesTheCallerModelAndSize() {
+        assertEquals("gpt-image-2.5", ImageApiSpec.DEFAULT_MODEL)
+        assertEquals("1024x1365", ImageApiSpec.DEFAULT_SIZE)
+        assertEquals(
+            "https://direct-api.cangyuansuanli.cn/v1/images/generations",
+            ImageApiSpec.generationsEndpoint(ImageApiSpec.DEFAULT_BASE_URL),
+        )
+        assertEquals(
+            "https://example.com/v1/images/generations",
+            ImageApiSpec.generationsEndpoint("https://example.com/v1"),
+        )
+        val body = ImageApiSpec.requestBody("my-model", "白底漫画", "1024x1792", async = true, referencePngBase64 = "aaaa")
+        assertEquals("my-model", body.getString("model"))
+        assertEquals("1024x1792", body.getString("size"))
         assertEquals(1, body.getJSONArray("image").length())
-        val plain = ImageApiSpec.requestBody("白底漫画")
+        val plain = ImageApiSpec.requestBody(ImageApiSpec.DEFAULT_MODEL, "白底漫画", ImageApiSpec.DEFAULT_SIZE, async = false)
+        assertEquals("gpt-image-2.5", plain.getString("model"))
+        assertEquals("1024x1365", plain.getString("size"))
         assertFalse(plain.has("image"))
-        val rejected = runCatching { ImageApiSpec.requireChannel("https://ai.cangyuansuanli.cn/v1/images/generations") }
-        assertTrue(rejected.exceptionOrNull()?.message.orEmpty().contains("一号通道"))
+        assertFalse(plain.optBoolean("async"))
+        assertTrue(ImageApiSpec.sizeChoices.any { it.first == "1024x1365" })
+        assertEquals(
+            "1024x1365",
+            ImageApiSpec.requestSize(ImageApiSpec.DEFAULT_BASE_URL, "gpt-image-2.5", "1024x1365"),
+        )
+        assertTrue(ImageApiSpec.isCangyuanHost(ImageApiSpec.DEFAULT_BASE_URL))
+        assertFalse(ImageApiSpec.isCangyuanHost("https://example.com/v1"))
+        assertTrue(runCatching { ImageApiSpec.generationsEndpoint("http://example.com") }.isFailure)
     }
 
     @Test

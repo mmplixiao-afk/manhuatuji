@@ -5,34 +5,89 @@ import org.json.JSONObject
 import java.net.URI
 
 object ImageApiSpec {
-    const val CHANNEL = "一号通道"
-    const val HOST = "direct-api.cangyuansuanli.cn"
-    const val BASE_URL = "https://direct-api.cangyuansuanli.cn"
-    const val MODEL = "gpt-image-2.5"
-    const val SIZE = "1024x1365"
+    const val DEFAULT_BASE_URL = "https://direct-api.cangyuansuanli.cn/v1"
+    const val DEFAULT_MODEL = "gpt-image-2.5"
+    const val DEFAULT_SIZE = "1024x1365"
+    const val DEFAULT_INTERFACE = "OpenAI Images API"
     const val MAX_RETRIES = 2
+    val sizeChoices = listOf(
+        "1024x1365" to "3:4 竖图",
+        "1024x1792" to "9:16 竖屏",
+        "1024x1024" to "1:1 正方形",
+        "1792x1024" to "16:9 横屏",
+    )
 
-    fun generationsUrl(): String = "$BASE_URL/v1/images/generations"
-
-    fun taskUrl(taskId: String): String = "${generationsUrl()}/$taskId"
-
-    fun requireChannel(url: String) {
-        val host = runCatching { URI(url).host?.lowercase() }.getOrNull()
-        require(host == HOST) { "生图只能走一号通道 $HOST" }
-        require(url.startsWith("https://")) { "生图地址必须使用 HTTPS" }
+    fun isCangyuanHost(baseUrl: String): Boolean {
+        val host = runCatching { URI(baseUrl).host.orEmpty().lowercase() }.getOrDefault("")
+        return host in setOf("ai.cangyuansuanli.cn", "www.ai.cangyuansuanli.cn", "direct-api.cangyuansuanli.cn")
     }
 
-    fun requestBody(prompt: String, referencePngBase64: String? = null): JSONObject {
+    /** 基址已以 /v1 结尾时不再加一层。 */
+    fun generationsEndpoint(baseUrl: String): String {
+        val url = baseUrl.trim().trimEnd('/')
+        require(url.startsWith("https://")) { "生图地址必须使用 HTTPS" }
+        return when {
+            url.endsWith("/images/generations") -> url
+            url.endsWith("/v1") -> "$url/images/generations"
+            else -> "$url/v1/images/generations"
+        }
+    }
+
+    /**
+     * 蓬源上少数旧模型只接受他们自己的像素尺寸。gpt-image-2.5 和 1024x1365 原样发送。
+     */
+    fun requestSize(baseUrl: String, model: String, imageSize: String): String {
+        val size = imageSize.ifBlank { DEFAULT_SIZE }
+        if (!isCangyuanHost(baseUrl)) return size
+        if (model.trim().lowercase() !in setOf("gpt-image-2", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare")) {
+            return size
+        }
+        return when (size.trim()) {
+            "16:9", "1792x1024" -> "1536x864"
+            "9:16", "1024x1792" -> "864x1536"
+            "1:1", "1024x1024" -> "1024x1024"
+            else -> size
+        }
+    }
+
+    fun aspect(size: String): Double? = when (size.trim()) {
+        "16:9", "1792x1024", "1536x864" -> 16.0 / 9.0
+        "9:16", "1024x1792", "864x1536" -> 9.0 / 16.0
+        "1:1", "1024x1024" -> 1.0
+        "3:4", "1024x1365" -> 3.0 / 4.0
+        else -> null
+    }
+
+    fun ratioInstruction(size: String): String = when (aspect(size)) {
+        16.0 / 9.0 -> "画幅硬性要求：最终图片必须是横屏 16:9，宽度明显大于高度，不要生成竖屏构图。"
+        9.0 / 16.0 -> "画幅硬性要求：最终图片必须是竖屏 9:16，高度明显大于宽度。"
+        1.0 -> "画幅硬性要求：最终图片必须是 1:1 正方形。"
+        3.0 / 4.0 -> "画幅硬性要求：最终图片必须是竖图 3:4，高度大于宽度。"
+        else -> ""
+    }
+
+    fun requestBody(
+        model: String,
+        prompt: String,
+        size: String,
+        async: Boolean,
+        referencePngBase64: String? = null,
+    ): JSONObject {
+        require(model.isNotBlank()) { "请设置生图模型 ID" }
         require(prompt.isNotBlank()) { "生图提示词不能为空" }
         val body = JSONObject()
-            .put("model", MODEL)
+            .put("model", model)
             .put("prompt", prompt)
-            .put("size", SIZE)
+            .put("size", size.ifBlank { DEFAULT_SIZE })
             .put("n", 1)
-            .put("response_format", "url")
-            .put("async", true)
-        require(body.getString("model") == "gpt-image-2.5") { "生图模型必须是 gpt-image-2.5" }
-        require(body.getString("model") != "gpt-image-2") { "不要使用 gpt-image-2" }
+        if (async) {
+            body.put("response_format", "url").put("async", true)
+        } else {
+            body.put("response_format", "b64_json")
+                .put("stream", false)
+                .put("watermark", false)
+                .put("sequential_image_generation", "disabled")
+        }
         if (!referencePngBase64.isNullOrBlank()) {
             body.put("image", JSONArray().put("data:image/png;base64,$referencePngBase64"))
         }

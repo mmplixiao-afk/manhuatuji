@@ -282,7 +282,7 @@ class GenerationService : Service() {
                     settings.prompt("image"),
                 )
                 val raw = store.rawFile(project, current)
-                api.image(settings.apiKey, finalPrompt, raw, if (useReference) referenceBase64(project) else null)
+                api.image(settings.imageProvider(), finalPrompt, raw, if (useReference) referenceBase64(project) else null)
                 val bitmap = BitmapFactory.decodeFile(raw.path) ?: error("图片无法解码")
                 val composed = if (current.kind == "cover") {
                     compositor.composeCover(bitmap, project.coverLine1, project.coverLine2)

@@ -561,6 +561,13 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onPrompts: () -> U
     var key by remember { mutableStateOf("") }
     var url by remember { mutableStateOf(settings.textBaseUrl) }
     var model by remember { mutableStateOf(settings.textModel) }
+    val savedImage = remember { settings.imageProvider() }
+    var imageName by remember { mutableStateOf(savedImage.name) }
+    var imageUrl by remember { mutableStateOf(savedImage.baseUrl) }
+    var imageModel by remember { mutableStateOf(savedImage.model) }
+    var imageKey by remember { mutableStateOf("") }
+    var imageSize by remember { mutableStateOf(savedImage.imageSize) }
+    var imageKeySaved by remember { mutableStateOf(settings.hasImageApiKey()) }
     var testing by remember { mutableStateOf(false) }
     var listing by remember { mutableStateOf(false) }
     var connectionResult by remember { mutableStateOf("") }
@@ -568,7 +575,11 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onPrompts: () -> U
     var showRest by remember { mutableStateOf(false) }
     val busy = testing || listing
     fun probe(kind: String) {
-        val apiKey = key.trim().ifBlank { settings.apiKey }
+        val apiKey = if (kind == "text") {
+            key.trim().ifBlank { settings.apiKey }
+        } else {
+            imageKey.trim().ifBlank { settings.imageProvider().key }
+        }
         testing = true
         connectionResult = ""
         scope.launch {
@@ -587,7 +598,11 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onPrompts: () -> U
                     } else {
                         val output = File(context.cacheDir, "api-test-image.png")
                         try {
-                            api.image(apiKey, "一张简单的红色圆形，白底，无文字、无水印。", output)
+                            api.image(
+                                ImageProviderConfig(imageName, imageUrl, imageModel, apiKey, imageSize),
+                                "一张简单的红色圆形，白底，无文字、无水印。",
+                                output,
+                            )
                             "图片接口连接成功"
                         } finally {
                             output.delete()
@@ -709,20 +724,68 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onPrompts: () -> U
                 ) { Text(if (testing) "测试中..." else "测试连接") }
             }
         } else {
-            Card(colors = CardDefaults.cardColors(containerColor = CardWhite)) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("生图已固定", fontWeight = FontWeight.Bold)
-                    Text("${ImageApiSpec.CHANNEL}  ${ImageApiSpec.HOST}")
-                    Text("模型 ${ImageApiSpec.MODEL}")
-                    Text("尺寸 ${ImageApiSpec.SIZE}，白底")
-                    Text("使用上面填写的 API Key；输入框为空时用已保存的 Key。模型只出纯图，旁白和封面红圈由程序叠加。", color = Muted, fontSize = 13.sp)
+            Text(if (imageKeySaved) "生图 Key 已加密保存在本机，和文本 Key 分开" else "生图 Key 还没填写，和文本 Key 不是同一把", color = Muted)
+            OutlinedTextField(
+                imageUrl,
+                { imageUrl = it },
+                enabled = !busy,
+                label = { Text("接口地址") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                imageName,
+                { imageName = it },
+                enabled = !busy,
+                label = { Text("接口类型") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                imageModel,
+                { imageModel = it },
+                enabled = !busy,
+                label = { Text("模型") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = imageKey,
+                onValueChange = { imageKey = it },
+                enabled = !busy,
+                label = { Text("密钥") },
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text("图片尺寸", fontWeight = FontWeight.Bold)
+            ImageApiSpec.sizeChoices.forEach { (value, label) ->
+                if (imageSize == value) {
+                    Button(onClick = { imageSize = value }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                        Text(label)
+                    }
+                } else {
+                    OutlinedButton(onClick = { imageSize = value }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                        Text(label)
+                    }
                 }
             }
-            OutlinedButton(
-                onClick = { probe("image") },
-                enabled = !busy,
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text(if (testing) "测试中..." else "测试连接") }
+            Text("画面仍由程序叠字。白底和 3:4 是默认尺寸，可以改。", color = Muted, fontSize = 13.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        settings.saveImageProvider(
+                            ImageProviderConfig(imageName, imageUrl, imageModel, imageKey, imageSize),
+                        )
+                        imageKey = ""
+                        imageKeySaved = settings.hasImageApiKey()
+                        onMessage(if (imageKeySaved) "图片接口已保存" else "地址和模型已保存，还没有生图 Key")
+                    },
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("保存设置") }
+                OutlinedButton(
+                    onClick = { probe("image") },
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text(if (testing) "测试中..." else "测试连接") }
+            }
         }
         if (connectionResult.isNotBlank()) {
             Text(

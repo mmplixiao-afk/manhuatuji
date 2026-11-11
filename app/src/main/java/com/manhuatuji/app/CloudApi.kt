@@ -15,6 +15,7 @@ import java.net.URI
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 
 class CloudApi {
     private val client = OkHttpClient.Builder()
@@ -53,29 +54,29 @@ class CloudApi {
         return content
     }
 
-    fun image(key: String, prompt: String, out: File, referenceBase64: String? = null) {
-        require(key.isNotBlank()) { "请先在设置里填写 API Key" }
-        val url = ImageApiSpec.generationsUrl()
-        ImageApiSpec.requireChannel(url)
-        val body = ImageApiSpec.requestBody(prompt, referenceBase64)
-        var result = JSONObject(post(url, body, key))
-        if (!hasImage(result)) {
-            val taskId = taskId(result)
-            require(taskId.isNotBlank()) { "生图接口未返回任务 ID，未自动重试以避免重复扣费" }
-            var polls = 0
-            while (!hasImage(result) && polls < 120) {
-                val status = result.optString("status").lowercase()
-                if (status in setOf("failed", "error", "cancelled", "canceled")) {
-                    val detail = (result.opt("error") ?: result.opt("message") ?: status).toString()
-                    error("生图任务失败：$detail")
-                }
-                Thread.sleep(2_500L)
-                result = JSONObject(get(ImageApiSpec.taskUrl(taskId), key))
-                polls++
-            }
+    fun image(config: ImageProviderConfig, prompt: String, out: File, referenceBase64: String? = null) {
+        require(config.key.isNotBlank()) { "请先在图片接口里填写 API Key" }
+        require(config.model.isNotBlank()) { "请设置生图模型 ID" }
+        val requestSize = ImageApiSpec.requestSize(config.baseUrl, config.model, config.imageSize)
+        val instruction = ImageApiSpec.ratioInstruction(config.imageSize)
+        val finalPrompt = if (instruction.isBlank()) prompt else "$prompt\n\n$instruction"
+        val endpoint = ImageApiSpec.generationsEndpoint(config.baseUrl)
+        val result = if (ImageApiSpec.isCangyuanHost(config.baseUrl)) {
+            cangyuanImage(endpoint, config, finalPrompt, requestSize, referenceBase64)
+        } else {
+            JSONObject(
+                post(
+                    endpoint,
+                    ImageApiSpec.requestBody(config.model, finalPrompt, requestSize, async = false, referenceBase64),
+                    config.key,
+                )
+            )
         }
-        require(hasImage(result)) { "生图任务等待超时，未重复提交" }
-        val item = (result.optJSONArray("data") ?: result.optJSONArray("images")).getJSONObject(0)
+        val items = result.optJSONArray("data") ?: result.optJSONArray("images")
+            ?: error("生图接口没有返回 data")
+        require(items.length() > 0) { "生图接口返回了空图片列表" }
+        val item = items.getJSONObject(0)
+        require(item.optString("b64_json").isNotBlank() || item.optString("url").isNotBlank()) { "生图接口没有返回图片" }
         val bytes = when {
             item.optString("b64_json").isNotBlank() -> Base64.decode(item.getString("b64_json"), Base64.DEFAULT)
             item.optString("url").isNotBlank() -> download(item.getString("url"))
@@ -85,10 +86,47 @@ class CloudApi {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "下载内容不是有效图片" }
+        val expectedAspect = ImageApiSpec.aspect(config.imageSize)
+        if (expectedAspect != null) {
+            val actualAspect = bounds.outWidth.toDouble() / bounds.outHeight.toDouble()
+            require(abs(actualAspect - expectedAspect) <= 0.04) {
+                "图片接口返回 ${bounds.outWidth}×${bounds.outHeight}，与所选画幅不符"
+            }
+        }
         out.parentFile?.mkdirs()
         val pending = File(out.parentFile, out.name + ".tmp")
         pending.writeBytes(bytes)
         Files.move(pending.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
+    }
+
+    /**
+     * 蓬源中转会把同步生图挂到网关超时。先提交任务再轮询同一个任务，避免超时后再提交一次造成重复扣费。
+     */
+    private fun cangyuanImage(
+        endpoint: String,
+        config: ImageProviderConfig,
+        prompt: String,
+        requestSize: String,
+        referenceBase64: String?,
+    ): JSONObject {
+        val body = ImageApiSpec.requestBody(config.model, prompt, requestSize, async = true, referenceBase64)
+        var result = JSONObject(post(endpoint, body, config.key))
+        if (hasImage(result)) return result
+        val taskId = taskId(result)
+        require(taskId.isNotBlank()) { "生图接口未返回任务 ID，未自动重试以避免重复扣费" }
+        var polls = 0
+        while (!hasImage(result) && polls < 120) {
+            val status = result.optString("status").lowercase()
+            if (status in setOf("failed", "error", "cancelled", "canceled")) {
+                val detail = (result.opt("error") ?: result.opt("message") ?: status).toString()
+                error("生图任务失败：$detail")
+            }
+            Thread.sleep(2_500L)
+            result = JSONObject(get("$endpoint/$taskId", config.key))
+            polls++
+        }
+        require(hasImage(result)) { "生图任务等待超时，任务 ID：$taskId；未重复提交" }
+        return result
     }
 
     private fun hasImage(value: JSONObject): Boolean {

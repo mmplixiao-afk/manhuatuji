@@ -1,6 +1,7 @@
 package com.manhuatuji.app
 
 import android.content.Context
+import com.manhuatuji.core.ImageApiSpec
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -8,6 +9,14 @@ import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.spec.GCMParameterSpec
+
+data class ImageProviderConfig(
+    val name: String,
+    val baseUrl: String,
+    val model: String,
+    val key: String,
+    val imageSize: String,
+)
 
 class AppSettings(context: Context) {
     private val appContext = context.applicationContext
@@ -28,6 +37,26 @@ class AppSettings(context: Context) {
         set(value) { if (value.isNotBlank()) saveSecret(value.trim()) }
 
     fun hasApiKey(): Boolean = secret().isNotBlank()
+
+    fun hasImageApiKey(): Boolean = imageSecret().isNotBlank()
+
+    fun imageProvider(): ImageProviderConfig = ImageProviderConfig(
+        name = prefs.getString("image_name", null)?.takeIf { it.isNotBlank() } ?: DEFAULT_IMAGE_INTERFACE,
+        baseUrl = prefs.getString("image_url", null)?.takeIf { it.isNotBlank() } ?: DEFAULT_IMAGE_URL,
+        model = prefs.getString("image_model", null)?.takeIf { it.isNotBlank() } ?: DEFAULT_IMAGE_MODEL,
+        key = imageSecret(),
+        imageSize = prefs.getString("image_size", null)?.takeIf { it.isNotBlank() } ?: DEFAULT_IMAGE_SIZE,
+    )
+
+    fun saveImageProvider(config: ImageProviderConfig) {
+        prefs.edit()
+            .putString("image_name", config.name.trim())
+            .putString("image_url", config.baseUrl.trim())
+            .putString("image_model", config.model.trim())
+            .putString("image_size", config.imageSize.trim())
+            .apply()
+        if (config.key.isNotBlank()) saveImageSecret(config.key.trim())
+    }
 
     fun prompt(name: String): String = prefs.getString("prompt_$name", null) ?: defaultPrompt(name)
 
@@ -73,9 +102,30 @@ class AppSettings(context: Context) {
         prefs.edit().putString("api_key", Base64.encodeToString(bytes, Base64.NO_WRAP)).apply()
     }
 
+    private fun imageSecret(): String {
+        val value = prefs.getString("key_image", null) ?: return ""
+        return runCatching {
+            val bytes = Base64.decode(value, Base64.NO_WRAP)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, masterKey(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
+            String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
+        }.getOrDefault("")
+    }
+
+    private fun saveImageSecret(value: String) {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, masterKey())
+        val bytes = cipher.iv + cipher.doFinal(value.toByteArray(Charsets.UTF_8))
+        prefs.edit().putString("key_image", Base64.encodeToString(bytes, Base64.NO_WRAP)).apply()
+    }
+
     companion object {
         const val DEFAULT_TEXT_URL = "https://ai.cangyuansuanli.cn"
         const val DEFAULT_TEXT_MODEL = "gemini-3.8-flash-high"
+        const val DEFAULT_IMAGE_URL = ImageApiSpec.DEFAULT_BASE_URL
+        const val DEFAULT_IMAGE_MODEL = ImageApiSpec.DEFAULT_MODEL
+        const val DEFAULT_IMAGE_SIZE = ImageApiSpec.DEFAULT_SIZE
+        const val DEFAULT_IMAGE_INTERFACE = ImageApiSpec.DEFAULT_INTERFACE
         val textModelChoices = listOf(
             "gemini-3.8-flash-high" to "Gemini 3.8",
             "gemini-4.0-flash" to "Gemini 4.0",
