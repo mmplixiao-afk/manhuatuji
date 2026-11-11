@@ -76,6 +76,11 @@ class AppSettings(context: Context) {
     companion object {
         const val DEFAULT_TEXT_URL = "https://ai.cangyuansuanli.cn"
         const val DEFAULT_TEXT_MODEL = "gemini-3.8-flash-high"
+        val textModelChoices = listOf(
+            "gemini-3.8-flash-high" to "Gemini 3.8",
+            "gemini-4.0-flash" to "Gemini 4.0",
+            "gpt-5.6" to "GPT 5.6",
+        )
         val promptTypes = listOf("storyboard", "image", "image_failure")
     }
 }

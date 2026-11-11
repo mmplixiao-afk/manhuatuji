@@ -21,6 +21,12 @@ class CopyDocumentTest {
     """.trimIndent()
 
     @Test
+    fun freeFormManuscriptIsNotAStructuredCopy() {
+        val manuscript = "上周同学来找我。她说这日子过不下去。"
+        assertEquals(null, CopyDocument.tryExport(manuscript))
+    }
+
+    @Test
     fun parsesDeliverableCopy() {
         val copy = CopyDocument.parse(sample)
         assertEquals("丈夫在外面又有了儿子，还要她净身出户", copy.title)

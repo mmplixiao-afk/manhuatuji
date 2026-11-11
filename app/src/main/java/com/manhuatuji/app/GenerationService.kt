@@ -71,6 +71,7 @@ class GenerationService : Service() {
         if (job?.isActive == true) return START_NOT_STICKY
         val id = intent?.getStringExtra(EXTRA_PROJECT) ?: return START_NOT_STICKY
         val panelId = intent.getIntExtra(EXTRA_PANEL, -1)
+        val feedback = intent.getStringExtra(EXTRA_FEEDBACK).orEmpty()
         activeProject = id
         val notification = notification("正在准备图集")
         startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
@@ -82,7 +83,7 @@ class GenerationService : Service() {
                 project.status = "running"
                 store.save(project)
                 when (intent.action) {
-                    ACTION_STORYBOARD -> generateStoryboard(project)
+                    ACTION_STORYBOARD -> generateStoryboard(project, feedback)
                     ACTION_IMAGES -> generateImages(project)
                     ACTION_REGENERATE -> regenerate(project, panelId)
                     else -> error("未知任务")
@@ -106,55 +107,89 @@ class GenerationService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun generateStoryboard(project: ComicProject) {
-        val copy = CopyDocument.parse(project.rawCopy)
-        project.copy = copy
-        project.title = copy.title
+    private fun generateStoryboard(project: ComicProject, feedback: String) {
+        val manuscript = StoryboardRules.normalizeManuscript(project.rawCopy)
+        require(StoryboardRules.canSplit(manuscript)) { "请先粘贴文稿" }
+        project.rawCopy = manuscript
+        runCatching { CopyDocument.parse(manuscript) }.getOrNull()?.let { structured ->
+            project.copy = structured
+            project.title = structured.title
+            if (project.coverLine1.isBlank()) project.coverLine1 = structured.coverLine1
+            if (project.coverLine2.isBlank()) project.coverLine2 = structured.coverLine2
+        }
+        if (project.title.isBlank() || project.title == "未命名图集") {
+            project.title = manuscript.lineSequence().firstOrNull { it.isNotBlank() }?.take(18) ?: "未命名图集"
+        }
         project.storyboardConfirmed = false
         update(project, "storyboard", "正在生成分镜")
         val prompt = settings.prompt("storyboard")
+        val note = feedback.trim()
         var last = ""
-        var content = ""
+        var parsed: com.manhuatuji.core.Storyboard? = null
         for (attempt in 0..1) {
-            val extra = if (attempt == 0) "" else "\n\n上次分镜不合格：$last\n请修正后只输出 JSON 对象。"
-            content = api.text(settings.textBaseUrl, settings.textModel, settings.apiKey, prompt + extra, copy.format())
-            val parsed = runCatching { StoryboardRules.parse(content) }.getOrNull()
-            if (parsed != null && StoryboardRules.issues(copy, parsed).isEmpty()) {
-                applyBoard(project, parsed, copy)
+            val extra = buildString {
+                if (note.isNotEmpty()) {
+                    append("\n\n【修改意见】\n")
+                    append(note)
+                    append("\n请按修改意见重新切分。voiceover 仍须逐字覆盖原稿，不得改写原文。")
+                }
+                if (attempt > 0) {
+                    append("\n\n上次结果不合格：")
+                    append(last)
+                    append("\n请只输出 JSON。所有 voiceover 按顺序拼接后必须与原稿逐字符一致。")
+                }
+            }
+            val content = api.text(
+                settings.textBaseUrl,
+                settings.textModel,
+                settings.apiKey,
+                prompt + extra,
+                manuscript,
+            )
+            val attemptParse = runCatching { StoryboardRules.parse(content) }
+            parsed = attemptParse.getOrNull()
+            if (parsed == null) {
+                last = attemptParse.exceptionOrNull()?.message ?: "分镜不是 JSON"
+                if (attempt == 0) update(project, "storyboard", "分镜格式不对，正在重试一次")
+                continue
+            }
+            if (StoryboardRules.coversManuscript(manuscript, parsed)) {
+                applyBoard(project, parsed, manuscript)
+                val warnings = StoryboardRules.warnings(parsed)
                 project.stage = "storyboard"
                 project.status = "review"
-                project.detail = "分镜已生成，请检查修改后点「确认出图」"
+                project.detail = if (warnings.isEmpty()) {
+                    "分镜已生成，请检查。要改节奏就写反馈后重拆，满意后再确认出图"
+                } else {
+                    "分镜已生成。" + warnings.take(3).joinToString("；")
+                }
                 store.save(project)
                 notifyStatus(project.detail, false)
                 return
             }
-            last = parsed?.let { StoryboardRules.issues(copy, it).joinToString("；") }
-                ?: runCatching { StoryboardRules.parse(content) }.exceptionOrNull()?.message
-                ?: "分镜不是有效 JSON"
-            if (attempt == 0) update(project, "storyboard", "分镜不合格，正在重试一次")
-            else if (parsed != null) {
-                applyBoard(project, parsed, copy)
-                project.storyboardConfirmed = false
-                project.status = "failed"
-                project.detail = "分镜还需修改：$last"
-                store.save(project)
-                notifyStatus(project.detail, false)
-                return
-            }
+            last = "旁白拼接后与原稿不一致"
+            if (attempt == 0) update(project, "storyboard", "旁白没有逐字覆盖原稿，正在重试一次")
         }
-        error("分镜重试一次后仍不合格：$last")
+        if (parsed != null) {
+            applyBoard(project, parsed, manuscript)
+            project.stage = "storyboard"
+            project.status = "review"
+            project.detail = "分镜已显示，但旁白还没逐字盖住原稿。可以改字，或写反馈后重拆。"
+            store.save(project)
+            notifyStatus(project.detail, false)
+            return
+        }
+        error("分镜重试一次后仍无法解析：$last")
     }
 
-    private fun applyBoard(project: ComicProject, board: com.manhuatuji.core.Storyboard, copy: CopyDocument) {
+    private fun applyBoard(project: ComicProject, board: com.manhuatuji.core.Storyboard, manuscript: String) {
         store.clearImages(project)
-        project.copy = copy
-        project.title = copy.title
         project.characters = board.characters.toMutableList()
         project.panels = board.panels.map {
             Panel(it.id, it.kind, it.caption, it.scene, it.imagePrompt, it.characterIds)
         }.toMutableList()
         project.storyboardConfirmed = false
-        project.storyboardSource = project.rawCopy.trim()
+        project.storyboardSource = manuscript
         project.referenceSupported = true
         project.completed = 0
         project.total = project.panels.size
@@ -162,16 +197,19 @@ class GenerationService : Service() {
 
     private suspend fun generateImages(project: ComicProject) {
         StoryboardRules.requireConfirmed(project.storyboardConfirmed)
-        val copy = project.copy ?: CopyDocument.parse(project.rawCopy)
-        StoryboardRules.validate(copy, project.storyboard())
-        val order = StoryboardRules.drawOrder(project.storyboard())
+        val manuscript = StoryboardRules.normalizeManuscript(project.rawCopy)
+        StoryboardRules.validateForImages(manuscript, project.storyboard())
+        ensureCover(project)
+        val order = StoryboardRules.drawOrder(project.storyboard()).filter { panel ->
+            panel.kind != "cover" || (project.coverLine1.isNotBlank() && project.coverLine2.isNotBlank())
+        }
         project.total = order.size
         var done = project.panels.count { it.imageStatus == "done" }
         for (spec in order) {
             val panel = project.panels.first { it.id == spec.id }
             if (panel.imageStatus == "done" && store.finalFile(project, panel).length() > 1000) continue
             update(project, "images", "正在绘制${label(project, panel)}", done, order.size)
-            val ok = drawPanel(project, panel, copy)
+            val ok = drawPanel(project, panel)
             val latest = project.panels.first { it.id == panel.id }
             if (!ok) {
                 project.status = "failed"
@@ -194,10 +232,12 @@ class GenerationService : Service() {
 
     private suspend fun regenerate(project: ComicProject, panelId: Int) {
         StoryboardRules.requireConfirmed(project.storyboardConfirmed)
-        val copy = project.copy ?: CopyDocument.parse(project.rawCopy)
         val panel = project.panels.firstOrNull { it.id == panelId } ?: error("找不到这一张")
+        if (panel.kind == "cover" && (project.coverLine1.isBlank() || project.coverLine2.isBlank())) {
+            error("请先填写封面两行")
+        }
         update(project, "images", "正在重做${label(project, panel)}")
-        val ok = drawPanel(project, panel, copy)
+        val ok = drawPanel(project, panel)
         val latest = project.panels.first { it.id == panel.id }
         if (!ok) {
             project.status = "failed"
@@ -215,7 +255,26 @@ class GenerationService : Service() {
         notifyStatus(project.detail, false)
     }
 
-    private suspend fun drawPanel(project: ComicProject, panel: Panel, copy: CopyDocument): Boolean {
+    private fun ensureCover(project: ComicProject) {
+        if (project.coverLine1.isBlank() || project.coverLine2.isBlank()) return
+        if (project.panels.any { it.kind == "cover" }) return
+        val anchor = project.panels.firstOrNull { it.kind == "page" } ?: return
+        val id = (project.panels.maxOfOrNull { it.id } ?: 0) + 1
+        project.panels.add(
+            0,
+            Panel(
+                id = id,
+                kind = "cover",
+                caption = "",
+                scene = anchor.scene,
+                imagePrompt = anchor.imagePrompt,
+                characterIds = anchor.characterIds,
+            ),
+        )
+        store.save(project)
+    }
+
+    private suspend fun drawPanel(project: ComicProject, panel: Panel): Boolean {
         var retriesUsed = 0
         var prompt = panel.imagePrompt
         var allowReference = project.referenceSupported
@@ -238,7 +297,7 @@ class GenerationService : Service() {
                 api.image(settings.apiKey, finalPrompt, raw, if (useReference) referenceBase64(project) else null)
                 val bitmap = BitmapFactory.decodeFile(raw.path) ?: error("图片无法解码")
                 val composed = if (current.kind == "cover") {
-                    compositor.composeCover(bitmap, copy.coverLine1, copy.coverLine2)
+                    compositor.composeCover(bitmap, project.coverLine1, project.coverLine2)
                 } else {
                     compositor.composePage(bitmap, current.caption)
                 }
@@ -365,6 +424,7 @@ class GenerationService : Service() {
     companion object {
         const val EXTRA_PROJECT = "project_id"
         const val EXTRA_PANEL = "panel_id"
+        const val EXTRA_FEEDBACK = "feedback"
         const val ACTION_STORYBOARD = "storyboard"
         const val ACTION_IMAGES = "images"
         const val ACTION_REGENERATE = "regenerate"

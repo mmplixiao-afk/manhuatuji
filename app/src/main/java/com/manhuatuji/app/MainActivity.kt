@@ -84,10 +84,17 @@ private fun AppRoot(store: ProjectStore, settings: AppSettings) {
     }
 }
 
-fun startGeneration(context: android.content.Context, projectId: String, action: String, panelId: Int = -1) {
+fun startGeneration(
+    context: android.content.Context,
+    projectId: String,
+    action: String,
+    panelId: Int = -1,
+    feedback: String = "",
+) {
     val intent = Intent(context, GenerationService::class.java)
         .setAction(action)
         .putExtra(GenerationService.EXTRA_PROJECT, projectId)
         .putExtra(GenerationService.EXTRA_PANEL, panelId)
+        .putExtra(GenerationService.EXTRA_FEEDBACK, feedback)
     ContextCompat.startForegroundService(context, intent)
 }

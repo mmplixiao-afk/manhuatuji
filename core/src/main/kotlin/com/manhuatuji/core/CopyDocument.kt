@@ -1,7 +1,8 @@
 package com.manhuatuji.core
 
 /**
- * 交付文案。导出的 `文案.txt` 使用 [format] 的版式。
+ * 可选的成稿格式。拆分镜不走这里，自由文稿可以直接粘贴。
+ * 只有文稿本身带「标题： / 封面字 / 正文： / 标签」时，导出才会排成这个版式。
  * 标题不超过 20 个字；封面正好两行；正文以提问收尾；标签单独一行并用空格分开。
  */
 data class CopyDocument(
@@ -22,6 +23,9 @@ data class CopyDocument(
     }
 
     companion object {
+        /** 成稿能解析时返回排好的导出文本；自由文稿返回 null，调用方改用原稿。 */
+        fun tryExport(raw: String): String? = runCatching { parse(raw).format() }.getOrNull()
+
         fun parse(raw: String): CopyDocument {
             val text = raw.replace("\uFEFF", "").replace("\r\n", "\n").replace('\r', '\n').trim()
             require(text.isNotEmpty()) { "请先粘贴文案" }

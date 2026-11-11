@@ -160,6 +160,10 @@ fun ProjectScreen(
         return
     }
     var raw by remember(projectId) { mutableStateOf(initial.rawCopy) }
+    var title by remember(projectId) { mutableStateOf(initial.title) }
+    var cover1 by remember(projectId) { mutableStateOf(initial.coverLine1) }
+    var cover2 by remember(projectId) { mutableStateOf(initial.coverLine2) }
+    var feedback by remember(projectId) { mutableStateOf("") }
     val characters = remember(projectId) { initial.characters.toMutableStateList() }
     val panels = remember(projectId) { initial.panels.toMutableStateList() }
     var status by remember(projectId) { mutableStateOf(initial.status) }
@@ -189,17 +193,20 @@ fun ProjectScreen(
             characters.addAll(fresh.characters)
             panels.clear()
             panels.addAll(fresh.panels)
+            title = fresh.title
+            if (cover1.isBlank()) cover1 = fresh.coverLine1
+            if (cover2.isBlank()) cover2 = fresh.coverLine2
             awaiting = false
         } else if (!awaiting) {
             mergePanelStatus(panels, fresh.panels)
         }
     }
-    val parsed = remember(raw) { runCatching { CopyDocument.parse(raw) } }
-    val storyIssues = remember(raw, characters.toList(), panels.toList()) {
-        val copy = parsed.getOrNull() ?: return@remember emptyList()
-        if (panels.isEmpty()) emptyList() else StoryboardRules.issues(copy, Storyboard(characters.toList(), panels.map { it.spec() }))
-    }
-    val copyDirty = source.isNotBlank() && raw.trim() != source.trim()
+    val canSplit = StoryboardRules.canSplit(raw)
+    val storyboardNow = Storyboard(characters.toList(), panels.map { it.spec() })
+    val blocking = if (panels.isEmpty()) emptyList() else StoryboardRules.blockingIssues(raw, storyboardNow)
+    val warnings = if (panels.isEmpty()) emptyList() else StoryboardRules.warnings(storyboardNow)
+    val copyDirty = source.isNotBlank() &&
+        StoryboardRules.normalizeManuscript(raw) != StoryboardRules.normalizeManuscript(source)
     val busy = status == "running"
     val treeLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -218,11 +225,14 @@ fun ProjectScreen(
     fun edited(): ComicProject? {
         val base = store.get(projectId) ?: return null
         base.rawCopy = raw
+        base.coverLine1 = cover1
+        base.coverLine2 = cover2
+        base.title = title
         base.characters = characters.toMutableList()
         base.panels = panels.map { it.copy() }.toMutableList()
-        parsed.getOrNull()?.let {
-            base.copy = it
-            base.title = it.title
+        runCatching { CopyDocument.parse(raw) }.getOrNull()?.let { structured ->
+            base.copy = structured
+            if (base.title.isBlank() || base.title == "未命名图集") base.title = structured.title
         }
         return base
     }
@@ -230,7 +240,7 @@ fun ProjectScreen(
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回") }
-            Text(parsed.getOrNull()?.title ?: initial.title, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Ink)
+            Text(title.ifBlank { "未命名图集" }, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Ink)
         }
         if (banner.isNotBlank()) Text(banner, color = Accent)
         if (detail.isNotBlank()) Text(detail, color = if (status == "failed") Accent else Muted)
@@ -246,32 +256,18 @@ fun ProjectScreen(
                 context.startService(Intent(context, GenerationService::class.java).setAction(GenerationService.ACTION_CANCEL))
             }) { Text("停止", color = Accent) }
         }
-        Text("文案", fontWeight = FontWeight.Bold, color = Ink)
-        Text("生成分镜不会出图。确认分镜后才点「确认出图」。", color = Muted, fontSize = 13.sp)
+        Text("文稿", fontWeight = FontWeight.Bold, color = Ink)
+        Text("直接粘贴豆包原稿或记录。生成分镜不会出图。", color = Muted, fontSize = 13.sp)
         OutlinedTextField(
             value = raw,
             onValueChange = { raw = it },
             modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp),
             enabled = !busy,
-            placeholder = { Text("标题：\n\n封面字（第二行红圈）：\n第一行\n第二行\n\n正文：\n……\n换你是她，你会怎么选？\n\n#真实故事 #婚姻", color = Muted, fontSize = 13.sp) },
+            placeholder = { Text("把一整篇原稿粘在这里，不需要标题、封面字或标签。", color = Muted, fontSize = 13.sp) },
         )
-        parsed.exceptionOrNull()?.let { if (raw.isNotBlank()) Text(it.message ?: "文案格式不对", color = Accent) }
-        parsed.getOrNull()?.let { copy ->
-            Card(colors = CardDefaults.cardColors(containerColor = CardWhite), shape = RoundedCornerShape(12.dp)) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("标题：${copy.title}", fontWeight = FontWeight.Bold)
-                    Text(copy.coverLine1)
-                    Text(copy.coverLine2, color = Accent)
-                    Text(copy.tags, color = Muted, fontSize = 13.sp)
-                }
-            }
-        }
         Button(
             onClick = {
-                val copy = parsed.getOrNull() ?: return@Button
                 val project = edited() ?: return@Button
-                project.copy = copy
-                project.title = copy.title
                 project.storyboardConfirmed = false
                 project.stage = "storyboard"
                 project.status = "running"
@@ -281,10 +277,49 @@ fun ProjectScreen(
                 status = "running"
                 startGeneration(context, projectId, GenerationService.ACTION_STORYBOARD)
             },
-            enabled = !busy && parsed.isSuccess,
+            enabled = !busy && canSplit,
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
         ) { Text("生成分镜") }
+        OutlinedTextField(
+            value = feedback,
+            onValueChange = { feedback = it },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !busy,
+            label = { Text("分镜反馈") },
+            placeholder = { Text("例如：太少、不连贯、开头再短一点", color = Muted) },
+        )
+        OutlinedButton(
+            onClick = {
+                val project = edited() ?: return@OutlinedButton
+                project.storyboardConfirmed = false
+                project.stage = "storyboard"
+                project.status = "running"
+                project.detail = "正在按反馈重新分镜"
+                store.save(project)
+                awaiting = true
+                status = "running"
+                startGeneration(context, projectId, GenerationService.ACTION_STORYBOARD, feedback = feedback)
+            },
+            enabled = !busy && canSplit && feedback.isNotBlank(),
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("按反馈重新分镜") }
+        Text("封面字", fontWeight = FontWeight.Bold, color = Ink)
+        Text("两行都可以先空着。填写后再确认出图，第二行会画红圈。", color = Muted, fontSize = 13.sp)
+        OutlinedTextField(
+            value = cover1,
+            onValueChange = { cover1 = it },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !busy,
+            label = { Text("封面第一行") },
+        )
+        OutlinedTextField(
+            value = cover2,
+            onValueChange = { cover2 = it },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !busy,
+            label = { Text("封面第二行（红圈）") },
+        )
 
         if (characters.isNotEmpty()) {
             Text("人物锁定", fontWeight = FontWeight.Bold)
@@ -313,7 +348,7 @@ fun ProjectScreen(
 
         if (panels.isNotEmpty()) {
             Text("分镜", fontWeight = FontWeight.Bold)
-            if (copyDirty) Text("文案已改，请重新生成分镜后再出图。", color = Accent)
+            if (copyDirty) Text("文稿已改，请重新生成分镜后再出图。", color = Accent)
             panels.forEachIndexed { index, panel ->
                 PanelCard(
                     projectId = projectId,
@@ -329,7 +364,7 @@ fun ProjectScreen(
                     onPreview = { onPreview(panel.id) },
                     onRedraw = {
                         if (copyDirty) {
-                            onBanner("文案已改，请重新生成分镜")
+                            onBanner("文稿已改，请重新生成分镜")
                             return@PanelCard
                         }
                         val project = edited() ?: return@PanelCard
@@ -342,19 +377,17 @@ fun ProjectScreen(
                     },
                 )
             }
-            storyIssues.forEach { Text(it, color = Accent, fontSize = 13.sp) }
+            warnings.forEach { Text(it, color = Muted, fontSize = 13.sp) }
+            blocking.forEach { Text(it, color = Accent, fontSize = 13.sp) }
             if (!confirmed) {
                 Button(
                     onClick = {
-                        val copy = parsed.getOrNull() ?: return@Button
-                        val issues = StoryboardRules.issues(copy, Storyboard(characters.toList(), panels.map { it.spec() }))
+                        val issues = StoryboardRules.blockingIssues(raw, Storyboard(characters.toList(), panels.map { it.spec() }))
                         if (issues.isNotEmpty() || copyDirty) {
-                            onBanner(if (copyDirty) "文案已改，请重新生成分镜" else issues.joinToString("；"))
+                            onBanner(if (copyDirty) "文稿已改，请重新生成分镜" else issues.joinToString("；"))
                             return@Button
                         }
                         val project = edited() ?: return@Button
-                        project.copy = copy
-                        project.title = copy.title
                         project.storyboardConfirmed = true
                         project.stage = "images"
                         project.status = "running"
@@ -364,7 +397,7 @@ fun ProjectScreen(
                         status = "running"
                         startGeneration(context, projectId, GenerationService.ACTION_IMAGES)
                     },
-                    enabled = !busy && parsed.isSuccess && storyIssues.isEmpty() && !copyDirty,
+                    enabled = !busy && blocking.isEmpty() && !copyDirty,
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Accent),
@@ -373,7 +406,7 @@ fun ProjectScreen(
                 Button(
                     onClick = {
                         if (copyDirty) {
-                            onBanner("文案已改，请重新生成分镜")
+                            onBanner("文稿已改，请重新生成分镜")
                             return@Button
                         }
                         val project = edited() ?: return@Button
@@ -452,7 +485,7 @@ private fun PanelCard(
                 OutlinedTextField(
                     value = panel.caption,
                     onValueChange = { onChange(panel.copy(caption = it)) },
-                    label = { Text("旁白，程序叠在上方") },
+                    label = { Text("旁白原文") },
                     enabled = !busy,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -520,42 +553,67 @@ fun PreviewScreen(store: ProjectStore, projectId: String, panelId: Int, onBack: 
 
 @Composable
 fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onPrompts: () -> Unit, onMessage: (String) -> Unit) {
+    var tab by remember { mutableStateOf("text") }
     var key by remember { mutableStateOf("") }
     var url by remember { mutableStateOf(settings.textBaseUrl) }
     var model by remember { mutableStateOf(settings.textModel) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回") }
-            Text("设置", fontWeight = FontWeight.Bold, fontSize = 22.sp)
+            Text("模型与接口", fontWeight = FontWeight.Bold, fontSize = 22.sp)
         }
-        Text(if (settings.hasApiKey()) "API Key 已保存在本机" else "还没有填写 API Key", color = Muted)
-        OutlinedTextField(
-            value = key,
-            onValueChange = { key = it },
-            label = { Text("API Key") },
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedTextField(url, { url = it }, label = { Text("文本接口") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(model, { model = it }, label = { Text("文本模型") }, modifier = Modifier.fillMaxWidth())
-        Card(colors = CardDefaults.cardColors(containerColor = CardWhite)) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("生图已固定", fontWeight = FontWeight.Bold)
-                Text("${ImageApiSpec.CHANNEL}  ${ImageApiSpec.HOST}")
-                Text("模型 ${ImageApiSpec.MODEL}，尺寸 ${ImageApiSpec.SIZE}，白底")
-                Text("模型只出纯图。旁白、封面两行字和第二行红圈由程序叠加。", color = Muted, fontSize = 13.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("text" to "文本接口", "image" to "图片接口").forEach { (id, label) ->
+                if (tab == id) {
+                    Button(onClick = { tab = id }, modifier = Modifier.weight(1f)) { Text(label) }
+                } else {
+                    OutlinedButton(onClick = { tab = id }, modifier = Modifier.weight(1f)) { Text(label) }
+                }
             }
         }
-        Button(
-            onClick = {
-                settings.textBaseUrl = url
-                settings.textModel = model
-                if (key.isNotBlank()) settings.apiKey = key
-                key = ""
-                onMessage(if (settings.hasApiKey()) "已保存" else "接口已保存，还没有 Key")
-            },
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("保存") }
+        if (tab == "text") {
+            Text(if (settings.hasApiKey()) "API Key 已加密保存在本机" else "还没有填写 API Key", color = Muted)
+            OutlinedTextField(
+                value = key,
+                onValueChange = { key = it },
+                label = { Text("API Key") },
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(url, { url = it }, label = { Text("接口地址") }, modifier = Modifier.fillMaxWidth())
+            Text("文本模型", fontWeight = FontWeight.Bold)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                AppSettings.textModelChoices.forEach { (id, label) ->
+                    OutlinedButton(onClick = { model = id }) { Text(label, fontSize = 12.sp) }
+                }
+            }
+            OutlinedTextField(
+                model,
+                { model = it },
+                label = { Text("模型 ID，也可以直接改") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = {
+                    settings.textBaseUrl = url
+                    settings.textModel = model
+                    if (key.isNotBlank()) settings.apiKey = key
+                    key = ""
+                    onMessage(if (settings.hasApiKey()) "文本接口已保存" else "地址和模型已保存，还没有 Key")
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("保存设置") }
+        } else {
+            Card(colors = CardDefaults.cardColors(containerColor = CardWhite)) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("生图已固定", fontWeight = FontWeight.Bold)
+                    Text("${ImageApiSpec.CHANNEL}  ${ImageApiSpec.HOST}")
+                    Text("模型 ${ImageApiSpec.MODEL}")
+                    Text("尺寸 ${ImageApiSpec.SIZE}，白底")
+                    Text("使用文本接口里保存的 API Key。模型只出纯图，旁白和封面红圈由程序叠加。", color = Muted, fontSize = 13.sp)
+                }
+            }
+        }
         OutlinedButton(onClick = onPrompts, modifier = Modifier.fillMaxWidth()) { Text("分镜和生图提示词") }
     }
 }

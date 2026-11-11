@@ -5,7 +5,9 @@ import android.content.Context
 import android.net.Uri
 import android.provider.MediaStore
 import androidx.documentfile.provider.DocumentFile
+import com.manhuatuji.core.CopyDocument
 import com.manhuatuji.core.ExportNames
+import com.manhuatuji.core.StoryboardRules
 import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.ZipEntry
@@ -13,14 +15,19 @@ import java.util.zip.ZipOutputStream
 
 class SetExporter(private val context: Context, private val store: ProjectStore) {
     fun files(project: ComicProject): List<Pair<String, File>> {
-        val copy = project.copy ?: runCatching { com.manhuatuji.core.CopyDocument.parse(project.rawCopy) }.getOrNull()
-            ?: error("文案还不能导出，请先按格式写好标题、封面、正文和标签")
-        val cover = project.panels.firstOrNull { it.kind == "cover" } ?: error("没有封面")
-        val coverFile = store.finalFile(project, cover)
-        require(coverFile.isFile && coverFile.length() > 1000) { "封面还没有生成" }
+        val manuscript = project.copy?.format()
+            ?: CopyDocument.tryExport(project.rawCopy)
+            ?: StoryboardRules.normalizeManuscript(project.rawCopy)
+        require(manuscript.isNotBlank()) { "没有可导出的文稿" }
         val pages = project.panels.filter { it.kind == "page" }
         require(pages.isNotEmpty()) { "没有内页" }
-        val out = mutableListOf(ExportNames.cover() to coverFile)
+        val out = mutableListOf<Pair<String, File>>()
+        val cover = project.panels.firstOrNull { it.kind == "cover" }
+        if (cover != null) {
+            val coverFile = store.finalFile(project, cover)
+            require(coverFile.isFile && coverFile.length() > 1000) { "封面还没有生成" }
+            out += ExportNames.cover() to coverFile
+        }
         pages.forEachIndexed { index, panel ->
             val file = store.finalFile(project, panel)
             val name = ExportNames.page(index + 1)
@@ -29,7 +36,7 @@ class SetExporter(private val context: Context, private val store: ProjectStore)
         }
         val text = store.copyFile(project)
         text.parentFile?.mkdirs()
-        text.writeText(copy.format())
+        text.writeText(manuscript)
         out += ExportNames.COPY to text
         return out
     }

@@ -64,6 +64,8 @@ data class ComicProject(
     var title: String,
     val createdAt: Long = System.currentTimeMillis(),
     var rawCopy: String = "",
+    var coverLine1: String = "",
+    var coverLine2: String = "",
     var copy: CopyDocument? = null,
     var characters: MutableList<CharacterLock> = mutableListOf(),
     var panels: MutableList<Panel> = mutableListOf(),
@@ -85,6 +87,8 @@ data class ComicProject(
         .put("title", title)
         .put("created_at", createdAt)
         .put("raw_copy", rawCopy)
+        .put("cover_line_1", coverLine1)
+        .put("cover_line_2", coverLine2)
         .put("copy", copy?.let { copyJson(it) } ?: JSONObject.NULL)
         .put("characters", JSONArray().apply { characters.forEach { put(characterJson(it)) } })
         .put("panels", JSONArray().apply { panels.forEach { put(it.json()) } })
@@ -106,6 +110,8 @@ data class ComicProject(
                 title = value.optString("title", "未命名图集"),
                 createdAt = value.optLong("created_at"),
                 rawCopy = value.optString("raw_copy"),
+                coverLine1 = value.optString("cover_line_1"),
+                coverLine2 = value.optString("cover_line_2"),
                 copy = copyObject?.let { copyFrom(it) },
                 characters = mutableListOf<CharacterLock>().apply {
                     val array = value.optJSONArray("characters") ?: JSONArray()
