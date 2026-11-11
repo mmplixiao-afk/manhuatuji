@@ -3,6 +3,7 @@ package com.manhuatuji.app
 import android.graphics.BitmapFactory
 import android.util.Base64
 import com.manhuatuji.core.ImageApiSpec
+import com.manhuatuji.core.TextModels
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -24,6 +25,11 @@ class CloudApi {
         .retryOnConnectionFailure(true)
         .build()
     private val jsonType = "application/json; charset=utf-8".toMediaType()
+
+    fun models(baseUrl: String, key: String): List<String> {
+        require(key.isNotBlank()) { "请先在设置里填写 API Key" }
+        return TextModels.parseModelIds(get(TextModels.modelsUrl(baseUrl), key))
+    }
 
     fun text(baseUrl: String, model: String, key: String, system: String, user: String): String {
         require(key.isNotBlank()) { "请先在设置里填写 API Key" }

@@ -22,7 +22,7 @@
 
 打开应用里的「设置 → 文本接口」，填写 API Key、接口地址和文本模型。Key 用 Android Keystore 加密后只存在手机本机，不要写进仓库。
 
-文本接口默认是 `https://ai.cangyuansuanli.cn`，模型可以点 Gemini 3.8、Gemini 4.0、GPT 5.6，也可以自己改模型 ID。请求走 OpenAI 兼容的 `/v1/chat/completions`。如果账号只通一号通道，把文本接口改成 `https://direct-api.cangyuansuanli.cn`。
+文本接口默认是 `https://ai.cangyuansuanli.cn`。预设的 Gemini 3.8、Gemini 4.0、GPT 5.6 只是快捷填法，这个平台上的公开名字可能不同。点「获取模型列表」会按当前地址和 Key 请求 `/v1/models`，点返回的 id 即可填入模型框，也可以自己改。请求走 OpenAI 兼容的 `/v1/chat/completions`。如果账号只通一号通道，把文本接口改成 `https://direct-api.cangyuansuanli.cn`。
 
 「图片接口」页只展示固定参数，不能改模型。两个页都有「测试连接」：文本会发一条很短的对话请求，图片会用固定通道出一张测试图并立刻删掉。输入框里的 Key 优先；留空则用已经保存的 Key，不必先点保存。提示词页仍是分镜、画面、审核改写三栏，可以保存或恢复默认。
 

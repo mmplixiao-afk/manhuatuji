@@ -63,8 +63,10 @@ import androidx.core.content.FileProvider
 import com.manhuatuji.core.CharacterLock
 import com.manhuatuji.core.CopyDocument
 import com.manhuatuji.core.ImageApiSpec
+import com.manhuatuji.core.ModelCatalog
 import com.manhuatuji.core.Storyboard
 import com.manhuatuji.core.StoryboardRules
+import com.manhuatuji.core.TextModels
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -560,7 +562,11 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onPrompts: () -> U
     var url by remember { mutableStateOf(settings.textBaseUrl) }
     var model by remember { mutableStateOf(settings.textModel) }
     var testing by remember { mutableStateOf(false) }
+    var listing by remember { mutableStateOf(false) }
     var connectionResult by remember { mutableStateOf("") }
+    var catalog by remember { mutableStateOf<ModelCatalog?>(null) }
+    var showRest by remember { mutableStateOf(false) }
+    val busy = testing || listing
     fun probe(kind: String) {
         val apiKey = key.trim().ifBlank { settings.apiKey }
         testing = true
@@ -596,6 +602,30 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onPrompts: () -> U
             onMessage(result)
         }
     }
+    fun loadModels() {
+        val apiKey = key.trim().ifBlank { settings.apiKey }
+        listing = true
+        connectionResult = ""
+        scope.launch {
+            val loaded = withContext(Dispatchers.IO) {
+                runCatching { TextModels.arrange(CloudApi().models(url.trim(), apiKey)) }
+            }
+            listing = false
+            loaded.onSuccess { found ->
+                catalog = found
+                showRest = found.textFirst.isEmpty()
+                connectionResult = when {
+                    found.isEmpty -> "连接失败：接口没有返回模型"
+                    found.onlyImageModels -> "这个 Key 可能没有文本模型，请换一个能对话的 Key。下面仍列出返回的模型。"
+                    else -> "已获取 ${found.textFirst.size + found.rest.size} 个模型，点一个填入模型 ID"
+                }
+            }.onFailure { error ->
+                catalog = null
+                connectionResult = "连接失败：${error.message.orEmpty().take(160).ifBlank { "请检查配置" }}"
+            }
+            onMessage(connectionResult)
+        }
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回") }
@@ -615,7 +645,7 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onPrompts: () -> U
             OutlinedTextField(
                 value = key,
                 onValueChange = { key = it },
-                enabled = !testing,
+                enabled = !busy,
                 label = { Text("API Key") },
                 visualTransformation = PasswordVisualTransformation(),
                 modifier = Modifier.fillMaxWidth(),
@@ -623,23 +653,43 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onPrompts: () -> U
             OutlinedTextField(
                 url,
                 { url = it },
-                enabled = !testing,
+                enabled = !busy,
                 label = { Text("接口地址") },
                 modifier = Modifier.fillMaxWidth(),
             )
             Text("文本模型", fontWeight = FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 AppSettings.textModelChoices.forEach { (id, label) ->
-                    OutlinedButton(onClick = { model = id }, enabled = !testing) { Text(label, fontSize = 12.sp) }
+                    OutlinedButton(onClick = { model = id }, enabled = !busy) { Text(label, fontSize = 12.sp) }
                 }
             }
             OutlinedTextField(
                 model,
                 { model = it },
-                enabled = !testing,
+                enabled = !busy,
                 label = { Text("模型 ID，也可以直接改") },
                 modifier = Modifier.fillMaxWidth(),
             )
+            OutlinedButton(
+                onClick = { loadModels() },
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (listing) "获取中..." else "获取模型列表") }
+            catalog?.let { found ->
+                val visible = if (showRest) found.textFirst + found.rest else found.textFirst
+                visible.forEach { id ->
+                    TextButton(
+                        onClick = { model = id },
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(id, maxLines = 1) }
+                }
+                if (found.rest.isNotEmpty() && found.textFirst.isNotEmpty()) {
+                    TextButton(onClick = { showRest = !showRest }, enabled = !busy) {
+                        Text(if (showRest) "收起其余 ${found.rest.size} 个" else "显示其余 ${found.rest.size} 个")
+                    }
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = {
@@ -649,12 +699,12 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onPrompts: () -> U
                         key = ""
                         onMessage(if (settings.hasApiKey()) "文本接口已保存" else "地址和模型已保存，还没有 Key")
                     },
-                    enabled = !testing,
+                    enabled = !busy,
                     modifier = Modifier.weight(1f),
                 ) { Text("保存设置") }
                 OutlinedButton(
                     onClick = { probe("text") },
-                    enabled = !testing,
+                    enabled = !busy,
                     modifier = Modifier.weight(1f),
                 ) { Text(if (testing) "测试中..." else "测试连接") }
             }
@@ -670,14 +720,17 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onPrompts: () -> U
             }
             OutlinedButton(
                 onClick = { probe("image") },
-                enabled = !testing,
+                enabled = !busy,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(if (testing) "测试中..." else "测试连接") }
         }
         if (connectionResult.isNotBlank()) {
-            Text(connectionResult, color = if (connectionResult.startsWith("连接失败")) Accent else Muted)
+            Text(
+                connectionResult,
+                color = if (connectionResult.startsWith("已获取") || connectionResult.endsWith("连接成功")) Muted else Accent,
+            )
         }
-        OutlinedButton(onClick = onPrompts, enabled = !testing, modifier = Modifier.fillMaxWidth()) { Text("分镜和生图提示词") }
+        OutlinedButton(onClick = onPrompts, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("分镜和生图提示词") }
     }
 }
 
